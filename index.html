@@ -759,7 +759,7 @@ footer ol a{color:var(--muted)}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-/* 3D station: a Three.js model driven by the same state object as the 2D drawing. */
+/* 3D station: a Three.js product model driven by the same state object as the 2D drawing. */
 window.BerthDock3D = (() => {
   "use strict";
   function supported() {
@@ -767,37 +767,65 @@ window.BerthDock3D = (() => {
     try { const c = document.createElement("canvas"); return !!(c.getContext("webgl") || c.getContext("experimental-webgl")); }
     catch (e) { return false; }
   }
-  function tokens() {
+  const pageTokens = () => {
     const s = getComputedStyle(document.documentElement), g = n => s.getPropertyValue(n).trim();
-    return {body:g("--m-body"), edge:g("--m-edge"), bay:g("--m-bay"), accent:g("--accent"), signal:g("--signal"), fg:g("--fg"), good:g("--good"), line:g("--line"), muted:g("--muted"), glass:g("--signal")};
-  }
+    return {bg:g("--bg"), accent:g("--accent"), dark:s.colorScheme !== "light" && g("color-scheme") !== "light"};
+  };
+  /* fixed product finishes, independent of page theme */
+  const F = {
+    shell:"#DDE1E5", trim:"#2C3238", cavity:"#1D2126", rubber:"#24282D", metal:"#9AA3AC",
+    copper:"#C9874E", accent:"#F2C230", graphite:"#2B3036", carbon:"#1A1D21", glass:"#0E1418",
+    signal:"#5CC8FF", good:"#4FD18B", red:"#FF4A3D", green:"#3DFF7A"
+  };
 
   function create(host, opts = {}) {
     const T = THREE, reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
     host.innerHTML = ""; host.classList.add("dock3d");
-    let C = tokens();
+    const lin = hex => new T.Color(hex).convertSRGBToLinear();
+
     const renderer = new T.WebGLRenderer({antialias:true, alpha:true});
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.outputEncoding = T.sRGBEncoding;
+    renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+    renderer.physicallyCorrectLights = true;
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap;
     host.appendChild(renderer.domElement);
-    renderer.domElement.setAttribute("role", "img");
-    renderer.domElement.setAttribute("aria-label", opts.label || "3D model of the Berth station");
+    const cv = renderer.domElement;
+    cv.setAttribute("role", "img");
+    cv.setAttribute("aria-label", opts.label || "3D model of the Berth station");
 
     const scene = new T.Scene();
-    const cam = new T.PerspectiveCamera(opts.fov || 30, 1.6, 0.1, 200);
-    scene.add(new T.HemisphereLight(0xffffff, 0x2a3440, 0.9));
-    const sun = new T.DirectionalLight(0xffffff, 1.05);
-    sun.position.set(6, 12, 8); sun.castShadow = true; sun.shadow.mapSize.set(1024, 1024);
-    Object.assign(sun.shadow.camera, {left:-9, right:9, top:9, bottom:-9, near:1, far:40}); sun.shadow.bias = -0.0006;
+    const cam = new T.PerspectiveCamera(opts.fov || 28, 1.6, 0.1, 200);
+
+    /* studio environment for reflections */
+    const pmrem = new T.PMREMGenerator(renderer);
+    const env = new T.Scene();
+    env.background = lin("#5d6670");
+    const envBox = new T.Mesh(new T.BoxGeometry(30, 14, 30), new T.MeshBasicMaterial({color:lin("#3a4048"), side:T.BackSide}));
+    envBox.position.y = 6; env.add(envBox);
+    const soft = (w, h, x, y, z, c, rx = 0, ry = 0) => {
+      const m = new T.Mesh(new T.PlaneGeometry(w, h), new T.MeshBasicMaterial({color:new T.Color(c).multiplyScalar(3), side:T.DoubleSide}));
+      m.position.set(x, y, z); m.rotation.set(rx, ry, 0); env.add(m);
+    };
+    soft(14, 8, 0, 12.5, 0, "#ffffff", Math.PI / 2);
+    soft(10, 4, -14, 5, 2, "#dfe9ff", 0, Math.PI / 2);
+    soft(6, 4, 13, 4, -6, "#fff1dc", 0, -Math.PI / 2);
+    soft(16, 2, 0, 3, 14, "#ffffff");
+    const floorEnv = new T.Mesh(new T.PlaneGeometry(30, 30), new T.MeshBasicMaterial({color:lin("#2a2d31")}));
+    floorEnv.rotation.x = -Math.PI / 2; env.add(floorEnv);
+    scene.environment = pmrem.fromScene(env, 0.035).texture;
+
+    /* lights */
+    const sun = new T.DirectionalLight(0xfff4e6, 3.2);
+    sun.position.set(7, 13, 6); sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048); sun.shadow.radius = 4; sun.shadow.bias = -0.0004; sun.shadow.normalBias = .02;
+    Object.assign(sun.shadow.camera, {left:-7, right:7, top:7, bottom:-7, near:2, far:40});
     scene.add(sun);
-    const rim = new T.DirectionalLight(0xa9cfff, 0.35); rim.position.set(-9, 6, -7); scene.add(rim);
+    scene.add(new T.HemisphereLight(0xdfe8ff, 0x23272c, .55));
 
     const parts = {lid:[], pad:[], land:[], charge:[], cams:[], compute:[], mast:[], power:[]};
     const all = [];
-    function mat(role, o = {}) {
-      const m = new T.MeshStandardMaterial(Object.assign({roughness:.55, metalness:.2}, o));
-      m.userData.role = role; m.color.set(C[role] || role); return m;
-    }
+    const mat = (hex, o = {}) => new T.MeshStandardMaterial(Object.assign({color:lin(hex), roughness:.5, metalness:.1, envMapIntensity:1}, o));
     function add(part, geo, m, x, y, z, parent = scene, shadow = true) {
       const mesh = new T.Mesh(geo, m);
       mesh.position.set(x, y, z); mesh.castShadow = shadow; mesh.receiveShadow = true;
@@ -805,151 +833,218 @@ window.BerthDock3D = (() => {
       if (part) parts[part].push(mesh);
       return mesh;
     }
-    const box = (w, h, d) => new T.BoxGeometry(w, h, d);
-    const cyl = (r, h, s = 20) => new T.CylinderGeometry(r, r, h, s);
-
-    /* ground */
-    const ground = new T.Mesh(new T.PlaneGeometry(60, 60), new T.ShadowMaterial({opacity:.28}));
-    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
-    const grid = new T.GridHelper(40, 40); grid.material.transparent = true; grid.material.opacity = .45; grid.position.y = .002; scene.add(grid);
-
-    /* body and equipment bay */
-    add(null, box(4.0, .14, 2.8), mat("edge"), 0, .07, 0);
-    add(null, box(3.6, 1.1, 2.4), mat("body", {metalness:.3, roughness:.5}), 0, .69, 0);
-    const stripe = add(null, box(3.6, .05, .03), mat("accent", {emissive:new T.Color(C.accent), emissiveIntensity:.15}), 0, 1.17, 1.21, scene, false);
-    const doors = [["power", -1.25, .9], ["charge", -.3, .8], ["compute", .55, .8], ["power", 1.35, .6]];
-    doors.forEach(([p, x, w]) => {
-      add(p, box(w, .78, .03), mat("bay"), x, .66, 1.215);
-      for (let i = 0; i < 4; i++) add(p, box(w * .7, .025, .02), mat("edge"), x, .42 + i * .07, 1.235, scene, false);
-      const led = add(p, new T.SphereGeometry(.025, 10, 8), mat("good", {emissive:new T.Color(C.good), emissiveIntensity:.9}), x - w / 2 + .1, .96, 1.235, scene, false);
-      led.userData.role = "good";
-    });
-
-    /* cavity: walls and glass front */
-    add(null, box(3.6, .5, .08), mat("body"), 0, 1.49, -1.16);
-    add(null, box(.08, .5, 2.4), mat("body"), -1.76, 1.49, 0);
-    add(null, box(.08, .5, 2.4), mat("body"), 1.76, 1.49, 0);
-    const glass = add(null, box(3.44, .46, .03), mat("glass", {transparent:true, opacity:.14, roughness:.1, metalness:.1, depthWrite:false, emissive:new T.Color(C.signal), emissiveIntensity:0}), 0, 1.47, 1.18, scene, false);
-    glass.castShadow = false;
-    add(null, box(3.6, .04, .06), mat("edge"), 0, 1.72, 1.18);
-
-    /* pad, fiducial, centering bars, contacts */
-    add("pad", box(3.44, .06, 2.24), mat("edge", {roughness:.7}), 0, 1.27, 0);
-    const fidCanvas = document.createElement("canvas"); fidCanvas.width = fidCanvas.height = 256;
-    const fidTex = new T.CanvasTexture(fidCanvas);
-    function drawFid() {
-      const g = fidCanvas.getContext("2d");
-      g.clearRect(0, 0, 256, 256);
-      g.strokeStyle = C.accent; g.lineWidth = 14; g.beginPath(); g.arc(128, 128, 96, 0, Math.PI * 2); g.stroke();
-      g.lineWidth = 4; g.beginPath(); g.moveTo(128, 20); g.lineTo(128, 236); g.moveTo(20, 128); g.lineTo(236, 128); g.stroke();
-      g.fillStyle = C.fg; [[40,40],[192,40],[40,192],[192,192]].forEach(([x, y]) => { g.fillRect(x - 14, y - 14, 28, 28); g.clearRect(x - 6, y - 6, 8, 8); });
-      g.fillStyle = C.fg; g.fillRect(110, 110, 36, 36); g.clearRect(118, 118, 12, 12); g.clearRect(132, 132, 8, 8);
-      fidTex.needsUpdate = true;
+    function rbox(w, h, d, r = .04, seg = 3) {
+      r = Math.min(r, w / 2.2, h / 2.2, d / 2.2);
+      const ww = w - 2 * r, hh = h - 2 * r, c = Math.min(r, ww / 2, hh / 2) * .9;
+      const s = new T.Shape(), x = -ww / 2, y = -hh / 2;
+      s.moveTo(x + c, y); s.lineTo(x + ww - c, y); s.quadraticCurveTo(x + ww, y, x + ww, y + c);
+      s.lineTo(x + ww, y + hh - c); s.quadraticCurveTo(x + ww, y + hh, x + ww - c, y + hh);
+      s.lineTo(x + c, y + hh); s.quadraticCurveTo(x, y + hh, x, y + hh - c);
+      s.lineTo(x, y + c); s.quadraticCurveTo(x, y, x + c, y);
+      const g = new T.ExtrudeGeometry(s, {depth:Math.max(.001, d - 2 * r), bevelEnabled:true, bevelThickness:r, bevelSize:r, bevelSegments:seg, curveSegments:5});
+      g.center(); g.computeVertexNormals(); return g;
     }
-    drawFid();
-    const fid = new T.Mesh(new T.PlaneGeometry(1.25, 1.25), new T.MeshStandardMaterial({map:fidTex, transparent:true, roughness:.8}));
-    fid.rotation.x = -Math.PI / 2; fid.position.set(0, 1.302, 0); fid.receiveShadow = true; scene.add(fid); parts.pad.push(fid);
-    const barL = add("pad", box(.07, .12, 2.0), mat("fg", {metalness:.4}), -1.55, 1.36, 0);
-    const barR = add("pad", box(.07, .12, 2.0), mat("fg", {metalness:.4}), 1.55, 1.36, 0);
-    const contacts = [-.45, .45].map(x => add("charge", box(.3, .02, .12), mat("accent", {emissive:new T.Color(C.accent), emissiveIntensity:.2}), x, 1.31, 0, scene, false));
-    const chgLight = new T.PointLight(new T.Color(C.accent), 0, 3); chgLight.position.set(0, 1.45, 0); scene.add(chgLight);
+    const box = (w, h, d) => new T.BoxGeometry(w, h, d);
+    const cyl = (r1, r2, h, s = 24) => new T.CylinderGeometry(r1, r2, h, s);
+    function canvasTex(w, h, draw, repeat) {
+      const c = document.createElement("canvas"); c.width = w; c.height = h; draw(c.getContext("2d"), w, h);
+      const t = new T.CanvasTexture(c); t.encoding = T.sRGBEncoding; t.anisotropy = 8;
+      if (repeat) { t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(repeat, repeat); }
+      return t;
+    }
 
-    /* precision landing camera and UWB anchors */
-    const dome = add("land", new T.SphereGeometry(.09, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), mat("signal", {emissive:new T.Color(C.signal), emissiveIntensity:.6}), -1.2, 1.3, .75);
-    [[-1.72, -1.12], [1.72, -1.12], [-1.72, 1.12], [1.72, 1.12]].forEach(([x, z]) =>
-      add("land", box(.08, .1, .08), mat("signal", {emissive:new T.Color(C.signal), emissiveIntensity:.4}), x, 1.79, z, scene, false));
-    const beamGeo = new T.ConeGeometry(.55, 1, 28, 1, true); beamGeo.translate(0, -.5, 0); beamGeo.rotateX(-Math.PI / 2);
-    const beam = new T.Mesh(beamGeo, new T.MeshBasicMaterial({color:new T.Color(C.signal), transparent:true, opacity:0, depthWrite:false, side:T.DoubleSide}));
-    beam.position.copy(dome.position); scene.add(beam);
+    /* ground: shadow catcher plus a concrete footing */
+    const shadowMat = new T.ShadowMaterial({opacity:.4});
+    const ground = new T.Mesh(new T.PlaneGeometry(80, 80), shadowMat);
+    ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+    const concrete = canvasTex(512, 512, (g, w, h) => {
+      g.fillStyle = "#8d9093"; g.fillRect(0, 0, w, h);
+      const img = g.getImageData(0, 0, w, h), d = img.data;
+      for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - .5) * 26; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+      g.putImageData(img, 0, 0);
+      for (let i = 0; i < 900; i++) { g.fillStyle = `rgba(${Math.random() < .5 ? "40,40,40" : "220,220,220"},${Math.random() * .12})`; g.beginPath(); g.arc(Math.random() * w, Math.random() * h, Math.random() * 2.2, 0, 7); g.fill(); }
+      g.strokeStyle = "rgba(30,30,30,.35)"; g.lineWidth = 2; g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, h); g.stroke();
+    }, 1);
+    add(null, box(6.4, .16, 4.8), mat("#ffffff", {map:concrete, roughness:.92}), .4, .08, -.1);
+    const top0 = .16;
 
-    /* inspection cameras */
-    const camPos = [[-1.66, 1.62, -1.06], [1.66, 1.62, -1.06], [-1.66, 1.62, 1.06], [1.66, 1.62, 1.06]];
-    const cones = camPos.map(([x, y, z]) => {
-      add("cams", new T.SphereGeometry(.06, 14, 10), mat("signal", {emissive:new T.Color(C.signal), emissiveIntensity:.8}), x, y, z, scene, false);
-      const len = Math.hypot(x, z) * .95;
-      const g = new T.ConeGeometry(.32, len, 24, 1, true); g.translate(0, -len / 2, 0); g.rotateX(-Math.PI / 2);
-      const c = new T.Mesh(g, new T.MeshBasicMaterial({color:new T.Color(C.signal), transparent:true, opacity:0, depthWrite:false, side:T.DoubleSide}));
-      c.position.set(x, y, z); c.lookAt(0, 1.5, 0); scene.add(c); return c;
+    /* enclosure */
+    const shell = () => mat(F.shell, {roughness:.38, metalness:.05, envMapIntensity:.9});
+    const trim = () => mat(F.trim, {roughness:.45, metalness:.35});
+    [[-1.65, -1.05], [1.65, -1.05], [-1.65, 1.05], [1.65, 1.05]].forEach(([x, z]) => add(null, cyl(.07, .09, .08), mat(F.metal, {metalness:.8, roughness:.35}), x, top0 + .04, z));
+    const bodyY0 = top0 + .08, bodyH = 1.16, bodyTop = bodyY0 + bodyH;
+    add(null, rbox(3.6, bodyH, 2.4, .07), shell(), 0, bodyY0 + bodyH / 2, 0);
+    add(null, rbox(3.64, .06, 2.44, .025), trim(), 0, bodyY0 + .03, 0);
+    // upper rim around the bay
+    const rimH = .56, rimY = bodyTop + rimH / 2, wallT = .12;
+    add(null, rbox(3.6, rimH, wallT, .03), shell(), 0, rimY, -1.2 + wallT / 2);
+    add(null, rbox(3.6, rimH, wallT, .03), shell(), 0, rimY, 1.2 - wallT / 2);
+    add(null, rbox(wallT, rimH, 2.4, .03), shell(), -1.8 + wallT / 2, rimY, 0);
+    add(null, rbox(wallT, rimH, 2.4, .03), shell(), 1.8 - wallT / 2, rimY, 0);
+    add(null, box(3.36, rimH - .02, 2.16), mat(F.cavity, {roughness:.8, side:T.BackSide}), 0, rimY - .01, 0, scene, false);
+    add(null, box(3.62, .018, 2.42), trim(), 0, bodyTop + .005, 0, scene, false);
+    const rimTop = bodyTop + rimH;
+
+    // front face: service doors, vents, seams, status bar, name plate
+    const fz = 1.2 + .004;
+    const doors = [["power", -1.2, .95], ["charge", -.18, .9], ["compute", .78, .9], ["power", 1.5, .42]];
+    doors.forEach(([p, x, w]) => {
+      add(p, box(w, .82, .012), mat(F.shell, {roughness:.42}), x, bodyY0 + .5, fz, scene, false);
+      add(p, box(w + .012, .006, .014), trim(), x, bodyY0 + .91, fz, scene, false);
+      add(p, box(w + .012, .006, .014), trim(), x, bodyY0 + .09, fz, scene, false);
+      add(p, box(.006, .82, .014), trim(), x - w / 2, bodyY0 + .5, fz, scene, false);
+      add(p, box(.006, .82, .014), trim(), x + w / 2, bodyY0 + .5, fz, scene, false);
+      if (w > .5) {
+        add(p, box(w * .62, .22, .01), mat(F.cavity, {roughness:.9}), x, bodyY0 + .28, fz + .004, scene, false);
+        for (let i = 0; i < 6; i++) add(p, box(w * .6, .012, .03), mat(F.shell, {roughness:.5}), x, bodyY0 + .19 + i * .036, fz + .012, scene, false);
+        add(p, rbox(.12, .025, .03, .01), mat(F.metal, {metalness:.9, roughness:.25}), x + w / 2 - .14, bodyY0 + .62, fz + .016, scene, false);
+      }
     });
-    const flashLight = new T.PointLight(new T.Color(C.signal), 0, 4); flashLight.position.set(0, 1.7, 0); scene.add(flashLight);
-
-    /* lid and rails */
-    const lidL = new T.Group(), lidR = new T.Group(); scene.add(lidL, lidR);
-    [[lidL, -1], [lidR, 1]].forEach(([g, s]) => {
-      add("lid", box(1.84, .08, 2.56), mat("body", {metalness:.35, roughness:.45}), 0, 0, 0, g);
-      add("lid", box(.36, .012, 2.3), mat("accent"), s * .66, .046, 0, g, false);
-      add("lid", box(1.84, .02, .04), mat("edge"), 0, -.05, 1.28, g, false);
-      g.position.set(s * .92, 1.8, 0);
+    const statusMat = mat("#111", {emissive:lin(F.good), emissiveIntensity:1.6});
+    add(null, rbox(1.4, .05, .03, .015), statusMat, -.18, bodyTop - .1, fz + .01, scene, false);
+    const plate = canvasTex(256, 64, (g, w, h) => {
+      g.fillStyle = "#24292f"; g.fillRect(0, 0, w, h);
+      g.fillStyle = "#e9ecef"; g.font = "700 30px Archivo, Helvetica, Arial, sans-serif"; g.textBaseline = "middle";
+      g.letterSpacing = "6px"; g.fillText("BERTH", 24, h / 2 + 1);
+      g.fillStyle = F.accent; g.fillRect(200, 22, 30, 6); g.fillRect(200, 36, 30, 6);
     });
-    [-1.25, 1.25].forEach(z => {
-      add("lid", box(7.6, .05, .06), mat("edge"), 0, 1.735, z);
-      [-3.7, 3.7].forEach(x => add("lid", box(.07, 1.71, .07), mat("edge"), x, .855, z));
+    add(null, box(.62, .155, .01), mat("#ffffff", {map:plate, roughness:.4}), 1.1, bodyTop - .1, fz + .006, scene, false);
+
+    // side hinge brackets and handles
+    [-1, 1].forEach(s => {
+      [-1.02, 1.02].forEach(z => add("lid", rbox(.16, .34, .12, .03), trim(), s * 1.86, bodyTop + .14, z));
+      add(null, rbox(.04, .06, .7, .015), mat(F.metal, {metalness:.9, roughness:.25}), s * 1.83, bodyY0 + .7, 0);
+    });
+
+    /* landing pad */
+    const padTop = bodyTop + .1;
+    const padTex = canvasTex(1024, 640, (g, w, h) => {
+      g.fillStyle = "#2a2e33"; g.fillRect(0, 0, w, h);
+      g.strokeStyle = "rgba(255,255,255,.05)"; g.lineWidth = 1;
+      for (let x = 0; x < w; x += 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+      const cx = w / 2, cy = h / 2;
+      g.strokeStyle = F.accent; g.lineWidth = 14; g.beginPath(); g.arc(cx, cy, 190, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 3; g.strokeStyle = "rgba(242,194,48,.55)"; g.beginPath(); g.arc(cx, cy, 230, 0, Math.PI * 2); g.stroke();
+      g.fillStyle = "#e9ecef";
+      const tag = (x, y, s) => { g.fillStyle = "#e9ecef"; g.fillRect(x - s / 2, y - s / 2, s, s); g.fillStyle = "#15181b"; const q = s / 6;
+        [[1,1],[3,1],[1,3],[4,4],[2,4],[4,2]].forEach(([a, b]) => g.fillRect(x - s / 2 + a * q, y - s / 2 + b * q, q, q)); };
+      tag(cx, cy, 120); tag(cx - 300, cy - 200, 70); tag(cx + 300, cy - 200, 70); tag(cx - 300, cy + 200, 70); tag(cx + 300, cy + 200, 70);
+      g.fillStyle = "rgba(233,236,239,.6)"; g.font = "500 22px IBM Plex Mono, monospace"; g.fillText("ST-01  ·  BAY A", 40, h - 34);
+    });
+    add("pad", box(3.34, .06, 2.14), mat("#ffffff", {map:padTex, roughness:.85}), 0, padTop - .03, 0);
+    const barMat = () => mat(F.trim, {metalness:.6, roughness:.3});
+    const barL = add("pad", rbox(.06, .1, 2.0, .02), barMat(), -1.55, padTop + .05, 0);
+    const barR = add("pad", rbox(.06, .1, 2.0, .02), barMat(), 1.55, padTop + .05, 0);
+    const contacts = [-.45, .45].map(x => add("charge", rbox(.34, .014, .14, .006), mat(F.copper, {metalness:1, roughness:.28, emissive:lin(F.accent), emissiveIntensity:0}), x, padTop + .007, 0, scene, false));
+    const chgLight = new T.PointLight(lin(F.accent), 0, 2.5, 2); chgLight.position.set(0, padTop + .15, 0); scene.add(chgLight);
+
+    /* precision-landing camera and UWB anchors */
+    const domeBase = add("land", cyl(.09, .1, .04), trim(), -1.25, padTop + .02, .78);
+    add("land", new T.SphereGeometry(.07, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), mat(F.glass, {roughness:.05, metalness:.2, emissive:lin(F.signal), emissiveIntensity:.25}), -1.25, padTop + .04, .78, scene, false);
+    [[-1.74, -1.14], [1.74, -1.14], [-1.74, 1.14], [1.74, 1.14]].forEach(([x, z]) =>
+      add("land", rbox(.09, .05, .09, .02), mat(F.trim, {emissive:lin(F.signal), emissiveIntensity:.35}), x, rimTop + .025, z, scene, false));
+    const beamGeo = new T.ConeGeometry(.5, 1, 32, 1, true); beamGeo.translate(0, -.5, 0); beamGeo.rotateX(-Math.PI / 2);
+    const beam = new T.Mesh(beamGeo, new T.MeshBasicMaterial({color:lin(F.signal), transparent:true, opacity:0, depthWrite:false, side:T.DoubleSide, blending:T.AdditiveBlending}));
+    beam.position.set(-1.25, padTop + .08, .78); scene.add(beam);
+
+    /* inspection cameras in the bay corners */
+    [[-1.62, -1.02], [1.62, -1.02], [-1.62, 1.02], [1.62, 1.02]].forEach(([x, z]) => {
+      add("cams", rbox(.1, .08, .1, .02), trim(), x, rimTop - .12, z, scene, false);
+      add("cams", cyl(.026, .026, .02, 16), mat(F.glass, {emissive:lin(F.signal), emissiveIntensity:.6}), x - Math.sign(x) * .05, rimTop - .12, z - Math.sign(z) * .05, scene, false).rotation.set(Math.PI / 2, 0, 0);
+    });
+    const flashLight = new T.PointLight(lin("#d9f1ff"), 0, 4, 2); flashLight.position.set(0, padTop + .5, 0); scene.add(flashLight);
+
+    /* two-panel roof on hinges: each panel pivots up and out around a hinge line on the side wall */
+    const lidT = .1, lidY = rimTop + lidT / 2 + .005;
+    const hingeY = bodyTop + .14;
+    const lids = [-1, 1].map(s => {
+      const pivot = new T.Group(); pivot.position.set(s * 1.86, hingeY, 0); scene.add(pivot);
+      const off = new T.Vector2(-s * (1.86 - .905), lidY - hingeY);
+      const panel = add("lid", rbox(1.81, lidT, 2.5, .035), mat(F.shell, {roughness:.34, envMapIntensity:1}), off.x, off.y, 0, pivot);
+      add("lid", box(1.6, .004, 2.3), mat(F.shell, {roughness:.55}), off.x, off.y + lidT / 2 + .002, 0, pivot, false);
+      add("lid", box(.32, .006, 2.2), mat(F.accent, {roughness:.5}), off.x - s * .62, off.y + lidT / 2 + .004, 0, pivot, false);
+      add("lid", box(.02, lidT * .9, 2.46), mat("#0f1215", {roughness:.9}), off.x + s * .9, off.y, 0, pivot, false);
+      [-1.02, 1.02].forEach(z => {
+        const len = Math.hypot(off.x * .35, off.y), arm = add("lid", rbox(.07, len + .06, .05, .02), trim(), off.x * .175, off.y / 2, z, pivot);
+        arm.rotation.z = Math.atan2(-off.x * .35, off.y);
+        add("lid", cyl(.05, .05, .08, 20), mat(F.metal, {metalness:.9, roughness:.25}), 0, 0, z, pivot).rotation.x = Math.PI / 2;
+      });
+      return {pivot, s, panel};
     });
 
     /* sky-awareness mast */
-    const mx = 2.6, mz = -2.0;
-    add("mast", box(.5, .1, .5), mat("edge"), mx, .05, mz);
-    add("mast", cyl(.05, 4.2), mat("edge", {metalness:.5}), mx, 2.1, mz);
-    add("mast", box(1.0, .04, .04), mat("edge"), mx, 3.9, mz);
-    add("mast", cyl(.014, .8, 8), mat("fg"), mx + .48, 4.3, mz);
-    const adsbTip = add("mast", new T.SphereGeometry(.04, 10, 8), mat("signal", {emissive:new T.Color(C.signal), emissiveIntensity:.8}), mx + .48, 4.72, mz, scene, false);
-    add("mast", box(.24, .32, .14), mat("bay"), mx, 3.2, mz + .1);
-    add("mast", box(.2, .12, .2), mat("bay"), mx - .42, 3.95, mz);
-    const anemo = new T.Group(); anemo.position.set(mx, 4.32, mz); scene.add(anemo);
-    add("mast", cyl(.02, .3, 8), mat("edge"), mx, 4.15, mz);
-    for (let i = 0; i < 3; i++) {
-      const a = i * Math.PI * 2 / 3, arm = add("mast", box(.38, .015, .015), mat("edge"), Math.cos(a) * .19, 0, Math.sin(a) * .19, anemo, false);
-      arm.rotation.y = -a;
-      add("mast", new T.SphereGeometry(.05, 10, 8), mat("fg"), Math.cos(a) * .38, 0, Math.sin(a) * .38, anemo, false);
-    }
+    const mx = 3.25, mz = -1.95;
+    const galv = () => mat("#b7bec5", {metalness:.85, roughness:.42});
+    add("mast", rbox(.5, .08, .5, .02), galv(), mx, top0 + .04, mz);
+    add("mast", cyl(.055, .065, 4.0), galv(), mx, top0 + 2.0, mz);
+    add("mast", box(.9, .045, .045), galv(), mx, 3.85, mz);
+    add("mast", cyl(.07, .07, .05), mat("#e9ecef", {roughness:.4}), mx - .42, 3.9, mz);
+    add("mast", new T.SphereGeometry(.07, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), mat("#f4f5f6", {roughness:.3}), mx - .42, 3.925, mz);
+    add("mast", cyl(.012, .012, .7, 8), mat("#e9ecef"), mx + .42, 4.22, mz);
+    const adsbTip = add("mast", new T.SphereGeometry(.022, 10, 8), mat("#e9ecef", {emissive:lin(F.red), emissiveIntensity:.8}), mx + .42, 4.58, mz, scene, false);
+    add("mast", cyl(.09, .09, .05), mat("#e9ecef", {roughness:.4}), mx, 4.12, mz);
+    [0, 1, 2].forEach(i => { const a = i * Math.PI * 2 / 3; add("mast", cyl(.01, .01, .14, 6), mat("#cfd4d9"), mx + Math.cos(a) * .06, 4.2, mz + Math.sin(a) * .06); });
+    add("mast", cyl(.09, .09, .02), mat("#e9ecef", {roughness:.4}), mx, 4.28, mz);
+    add("mast", cyl(.02, .02, .2, 8), galv(), mx, 3.98, mz);
+    add("mast", rbox(.26, .34, .16, .03), mat(F.shell, {roughness:.4}), mx, 2.9, mz + .12);
+    add("mast", new T.SphereGeometry(.08, 20, 12), mat(F.glass, {roughness:.05, metalness:.3}), mx, 3.3, mz + .12);
+    add("mast", rbox(.22, .08, .22, .02), mat(F.trim), mx, 3.38, mz + .12);
+    add(null, box(2.3, .04, .1), mat(F.trim, {roughness:.7}), mx - 1.3, top0 + .02, mz + .5, scene, false);
     const rings = [0, .5].map(o => {
-      const r = new T.Mesh(new T.TorusGeometry(.5, .008, 6, 64), new T.MeshBasicMaterial({color:new T.Color(C.signal), transparent:true, opacity:0, depthWrite:false}));
+      const r = new T.Mesh(new T.TorusGeometry(.5, .005, 6, 80), new T.MeshBasicMaterial({color:lin(F.signal), transparent:true, opacity:0, depthWrite:false, blending:T.AdditiveBlending}));
       r.rotation.x = Math.PI / 2; r.position.copy(adsbTip.position); r.userData.o = o; scene.add(r); return r;
     });
-    add(null, box(2.2, .03, .12), mat("edge"), mx - 1.1 + .2, .015, mz + .6, scene, false);
 
     /* drone */
     const drone = new T.Group(); scene.add(drone);
-    const dm = () => mat("fg", {metalness:.25, roughness:.4});
-    add(null, box(.5, .14, .36), dm(), 0, .26, 0, drone);
-    const shell = add(null, new T.SphereGeometry(.26, 24, 12), dm(), 0, .33, 0, drone); shell.scale.set(1, .38, .78);
+    const body = () => mat(F.graphite, {roughness:.42, metalness:.2});
+    add(null, rbox(.52, .15, .36, .05), body(), 0, .26, 0, drone);
+    const shellTop = add(null, new T.SphereGeometry(.25, 32, 16), mat(F.graphite, {roughness:.3, metalness:.25}), 0, .32, 0, drone); shellTop.scale.set(1, .32, .76);
+    add(null, rbox(.12, .04, .08, .015), mat(F.trim), 0, .37, -.08, drone);
     const props = [], discs = [];
-    [45, 135, 225, 315].forEach(deg => {
+    const blur = canvasTex(256, 256, (g, w, h) => {
+      const gr = g.createRadialGradient(w / 2, h / 2, w * .06, w / 2, h / 2, w / 2);
+      gr.addColorStop(0, "rgba(40,44,50,0)"); gr.addColorStop(.25, "rgba(60,64,70,.22)"); gr.addColorStop(.9, "rgba(60,64,70,.28)"); gr.addColorStop(1, "rgba(60,64,70,0)");
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    });
+    [45, 135, 225, 315].forEach((deg, i) => {
       const a = deg * Math.PI / 180, cx = Math.cos(a), cz = Math.sin(a);
-      const arm = add(null, box(.6, .045, .07), dm(), cx * .38, .27, cz * .38, drone); arm.rotation.y = -a;
-      add(null, cyl(.075, .09), dm(), cx * .68, .3, cz * .68, drone);
-      const p = new T.Group(); p.position.set(cx * .68, .36, cz * .68); drone.add(p);
-      add(null, box(.62, .012, .06), mat("muted", {metalness:.1}), 0, 0, 0, p, false);
+      const arm = add(null, cyl(.026, .036, .56, 12), body(), cx * .38, .27, cz * .38, drone);
+      arm.rotation.z = Math.PI / 2; arm.rotation.y = -a; arm.rotation.order = "YZX";
+      add(null, cyl(.07, .075, .09, 24), mat("#3a4047", {metalness:.85, roughness:.3}), cx * .66, .3, cz * .66, drone);
+      add(null, cyl(.02, .02, .03, 12), mat(F.metal, {metalness:1, roughness:.2}), cx * .66, .36, cz * .66, drone);
+      const p = new T.Group(); p.position.set(cx * .66, .37, cz * .66); drone.add(p);
+      [0, Math.PI].forEach(r => { const b = add(null, rbox(.3, .008, .05, .004), mat(F.carbon, {roughness:.35, metalness:.3}), .15 * Math.cos(r), 0, -.15 * Math.sin(r), p, false); b.rotation.y = r; b.rotation.x = .12; });
       props.push(p);
-      const disc = new T.Mesh(new T.CircleGeometry(.32, 32), new T.MeshBasicMaterial({color:new T.Color(C.muted), transparent:true, opacity:0, depthWrite:false, side:T.DoubleSide}));
+      const disc = new T.Mesh(new T.CircleGeometry(.32, 40), new T.MeshBasicMaterial({map:blur, transparent:true, opacity:0, depthWrite:false, side:T.DoubleSide}));
       disc.rotation.x = -Math.PI / 2; disc.position.copy(p.position); drone.add(disc); discs.push(disc);
+      if (i < 2) add(null, new T.SphereGeometry(.018, 10, 8), mat("#111", {emissive:lin(i === 0 ? F.green : F.red), emissiveIntensity:2.2}), cx * .62, .25, cz * .62, drone, false);
     });
-    [-.2, .2].forEach(x => {
-      add(null, cyl(.016, .62, 8), dm(), x, .015, 0, drone).rotation.x = Math.PI / 2;
-      [-.16, .16].forEach(z => { const leg = add(null, cyl(.014, .22, 8), dm(), x * .8, .12, z, drone); leg.rotation.z = x > 0 ? .25 : -.25; });
+    [-.19, .19].forEach(x => {
+      add(null, cyl(.014, .014, .6, 10), body(), x, .015, 0, drone).rotation.x = Math.PI / 2;
+      [-.15, .15].forEach(z => { const leg = add(null, cyl(.013, .016, .24, 10), body(), x * .82, .12, z, drone); leg.rotation.z = x > 0 ? .28 : -.28; });
     });
-    add(null, new T.SphereGeometry(.065, 14, 10), mat("edge"), 0, .15, .16, drone);
-    const led = add(null, new T.SphereGeometry(.025, 10, 8), mat("good", {emissive:new T.Color(C.good), emissiveIntensity:1}), 0, .3, -.19, drone, false);
-    led.userData.role = "good";
+    add(null, rbox(.12, .1, .1, .03), body(), 0, .16, .17, drone);
+    add(null, cyl(.032, .032, .03, 20), mat(F.glass, {roughness:.02, metalness:.6}), 0, .16, .225, drone).rotation.x = Math.PI / 2;
+    const strobe = add(null, new T.SphereGeometry(.016, 10, 8), mat("#111", {emissive:lin("#ffffff"), emissiveIntensity:0}), 0, .3, -.2, drone, false);
     drone.traverse(o => { if (o.isMesh) o.castShadow = true; });
 
-    /* data link line */
+    /* data link */
     const linkGeo = new T.BufferGeometry().setFromPoints([new T.Vector3(), new T.Vector3()]);
-    const link = new T.Line(linkGeo, new T.LineDashedMaterial({color:new T.Color(C.accent), dashSize:.18, gapSize:.14, transparent:true, opacity:0}));
+    const link = new T.Line(linkGeo, new T.LineDashedMaterial({color:lin(F.accent), dashSize:.14, gapSize:.12, transparent:true, opacity:0}));
     scene.add(link);
 
     all.forEach(m => { const mt = m.material; if (mt.emissive) m.userData.em = {c:mt.emissive.clone(), i:mt.emissiveIntensity}; });
 
-    /* camera rig with drag to orbit */
-    const rig = Object.assign({az:.58, el:.27, r:10.8, tx:.5, ty:2.2, tz:-.2}, opts.view || {});
+    /* camera rig, drag to orbit */
+    const rig = Object.assign({az:.62, el:.22, r:10.2, tx:.55, ty:2.0, tz:-.2}, opts.view || {});
     const goal = Object.assign({}, rig);
     let dragAz = 0, dragEl = 0, dragging = false, px = 0, py = 0;
-    const cv = renderer.domElement;
     cv.style.touchAction = "pan-y"; cv.style.cursor = "grab";
     cv.addEventListener("pointerdown", e => { dragging = true; px = e.clientX; py = e.clientY; cv.style.cursor = "grabbing"; });
     window.addEventListener("pointermove", e => {
       if (!dragging) return;
-      dragAz -= (e.clientX - px) * .006; dragEl = Math.max(-.25, Math.min(.5, dragEl + (e.clientY - py) * .004));
+      dragAz -= (e.clientX - px) * .006; dragEl = Math.max(-.2, Math.min(.5, dragEl + (e.clientY - py) * .004));
       px = e.clientX; py = e.clientY;
     });
     window.addEventListener("pointerup", () => { dragging = false; cv.style.cursor = "grab"; });
@@ -965,45 +1060,56 @@ window.BerthDock3D = (() => {
 
     /* state */
     let st = {lid:0, dx:0, dy:0, vis:1, spin:0, bars:1, charge:0, flash:0, beam:0, link:0};
-    const pos = new T.Vector3(0, 1.3, 0), prev = new T.Vector3(0, 1.3, 0);
+    const pos = new T.Vector3(0, padTop, 0), prev = pos.clone();
     let tiltX = 0, tiltZ = 0;
+    const cGood = lin(F.good), cSig = lin(F.signal), cAcc = lin(F.accent), tmpC = new T.Color();
     function apply(time) {
-      lidL.position.x = -(.92 + 1.86 * st.lid); lidR.position.x = .92 + 1.86 * st.lid;
+      const th = ease(st.lid) * 1.78;
+      lids.forEach(l => { l.pivot.rotation.z = -l.s * th; });
       barL.position.x = -1.55 + 1.0 * st.bars; barR.position.x = 1.55 - 1.0 * st.bars;
       const up = -st.dy / 40;
-      pos.set(st.dx / 40, 1.3 + up, st.dy < -210 ? -((-st.dy) - 210) / 10 : 0);
+      pos.set(st.dx / 40, padTop + up, st.dy < -210 ? -((-st.dy) - 210) / 10 : 0);
       drone.position.copy(pos);
       drone.visible = st.vis > .5;
       const vx = pos.x - prev.x, vz = pos.z - prev.z;
-      tiltZ += (-vx * 6 - tiltZ) * .15; tiltX += (vz * 4 - tiltX) * .15;
-      drone.rotation.z = Math.max(-.35, Math.min(.35, tiltZ)); drone.rotation.x = Math.max(-.35, Math.min(.35, tiltX));
+      tiltZ += (-vx * 6 - tiltZ) * .12; tiltX += (vz * 4 - tiltX) * .12;
+      drone.rotation.z = Math.max(-.3, Math.min(.3, tiltZ)); drone.rotation.x = Math.max(-.3, Math.min(.3, tiltX));
+      drone.position.y += st.spin && up > .05 && !reduce ? Math.sin(time * .004) * .015 : 0;
       prev.copy(pos);
       const spin = st.spin && !reduce;
-      props.forEach((p, i) => { p.rotation.y = spin ? time * .06 * (i % 2 ? 1 : -1) : i * .7; });
-      discs.forEach(d => d.material.opacity = st.spin ? .16 : 0);
-      contacts.forEach(c => c.material.emissiveIntensity = .2 + st.charge * 1.4);
-      chgLight.intensity = st.charge * 1.6;
-      flashLight.intensity = st.flash * 2.2;
-      glass.material.emissiveIntensity = st.flash * .9; glass.material.opacity = .14 + st.flash * .2;
-      stripe.material.emissiveIntensity = .15 + st.charge * 1.1;
-      cones.forEach(c => c.material.opacity = st.flash * .16);
-      beam.material.opacity = st.beam * .13 * (drone.visible ? 1 : 0);
-      const dist = Math.max(.6, beam.position.distanceTo(pos)); beam.scale.set(1, 1, dist); beam.lookAt(pos.x, pos.y + .1, pos.z);
+      props.forEach((p, i) => { p.rotation.y = spin ? time * .08 * (i % 2 ? 1 : -1) : i * .9 + .4; p.children.forEach(b => b.visible = !spin); });
+      discs.forEach(d => d.material.opacity = st.spin ? 1 : 0);
+      strobe.material.emissiveIntensity = st.spin && (time % 1200) < 70 ? 6 : 0;
+      contacts.forEach(c => c.material.emissiveIntensity = st.charge * .6);
+      chgLight.intensity = st.charge * 2.5;
+      flashLight.intensity = st.flash * 9;
+      tmpC.copy(cGood).lerp(cAcc, Math.min(1, st.charge)).lerp(cSig, Math.min(1, st.flash * 1.4));
+      statusMat.emissive.copy(tmpC); statusMat.emissiveIntensity = 2 + st.flash * 3 + st.charge * 1.6;
+      beam.material.opacity = st.beam * .08 * (drone.visible ? 1 : 0);
+      const dist = Math.max(.5, beam.position.distanceTo(pos)); beam.scale.set(1, 1, dist); beam.lookAt(pos.x, pos.y + .1, pos.z);
       const lp = linkGeo.attributes.position;
       lp.setXYZ(0, adsbTip.position.x, adsbTip.position.y, adsbTip.position.z); lp.setXYZ(1, pos.x, pos.y + .3, pos.z); lp.needsUpdate = true;
-      link.computeLineDistances(); link.material.opacity = st.link * (drone.visible ? .9 : 0);
-      anemo.rotation.y = reduce ? 0 : time * .0025;
-      rings.forEach(r => { const k = reduce ? .5 : ((time / 3200) + r.userData.o) % 1; r.scale.setScalar(.3 + k * 2.4); r.material.opacity = (1 - k) * .55; });
+      link.computeLineDistances(); link.material.opacity = st.link * (drone.visible ? .7 : 0);
+      rings.forEach(r => { const k = reduce ? .5 : ((time / 3400) + r.userData.o) % 1; r.scale.setScalar(.3 + k * 2.2); r.material.opacity = (1 - k) * .35; });
+      adsbTip.material.emissiveIntensity = (time % 1500) < 150 ? 3 : .4;
     }
+    function ease(t) { return t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+    function theme() {
+      const tk = pageTokens(), dark = matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.dataset.theme !== "light" || document.documentElement.dataset.theme === "dark";
+      shadowMat.opacity = dark ? .55 : .3;
+      renderer.toneMappingExposure = dark ? .92 : 1.05;
+      if (hlKey) highlight(hlKey);
+    }
+    matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", theme);
+    new MutationObserver(theme).observe(document.documentElement, {attributes:true, attributeFilter:["data-theme"]});
 
     let W = 0, H = 0;
     function resize() {
       W = host.clientWidth; H = Math.round(W * (opts.aspect || .64));
       if (!W) return;
       renderer.setSize(W, H, false); cv.style.width = W + "px"; cv.style.height = H + "px";
-      cam.aspect = W / H;
-      cam.fov = (opts.fov || 30) * (W < 520 ? 1.18 : 1);
-      cam.updateProjectionMatrix();
+      cam.aspect = W / H; cam.fov = (opts.fov || 28) * (W < 520 ? 1.2 : 1); cam.updateProjectionMatrix();
     }
     resize();
     if ("ResizeObserver" in window) new ResizeObserver(resize).observe(host); else addEventListener("resize", resize);
@@ -1014,9 +1120,9 @@ window.BerthDock3D = (() => {
     function frame(time) {
       requestAnimationFrame(frame);
       if (!visible || !W) return;
-      ["az","el","r","tx","ty","tz"].forEach(k => rig[k] += (goal[k] - rig[k]) * .08);
-      const sway = reduce || dragging ? 0 : Math.sin(time * .00018) * .1;
-      const az = rig.az + dragAz + sway, el = Math.max(.08, rig.el + dragEl);
+      ["az", "el", "r", "tx", "ty", "tz"].forEach(k => rig[k] += (goal[k] - rig[k]) * .07);
+      const sway = reduce || dragging ? 0 : Math.sin(time * .00016) * .09;
+      const az = rig.az + dragAz + sway, el = Math.max(.06, rig.el + dragEl);
       cam.position.set(rig.tx + rig.r * Math.cos(el) * Math.sin(az), rig.ty + rig.r * Math.sin(el), rig.tz + rig.r * Math.cos(el) * Math.cos(az));
       cam.lookAt(rig.tx, rig.ty, rig.tz);
       apply(time);
@@ -1029,29 +1135,15 @@ window.BerthDock3D = (() => {
     }
     requestAnimationFrame(frame);
 
-    function recolor() {
-      C = tokens();
-      all.forEach(m => { const mt = m.material, role = mt.userData.role; if (role && C[role]) mt.color.set(C[role]); });
-      [beam, ...cones, ...rings].forEach(m => m.material.color.set(C.signal));
-      discs.forEach(d => d.material.color.set(C.muted));
-      link.material.color.set(C.accent); chgLight.color.set(C.accent); flashLight.color.set(C.signal);
-      grid.material.color && grid.material.color.set(C.line);
-      drawFid();
-      all.forEach(m => { const mt = m.material; if (mt.emissive && mt.userData.role && ["accent","signal","good"].includes(mt.userData.role)) { mt.emissive.set(C[mt.userData.role]); m.userData.em = {c:mt.emissive.clone(), i:m.userData.em ? m.userData.em.i : mt.emissiveIntensity}; } });
-      if (hlKey) highlight(hlKey);
-    }
-    grid.material.vertexColors = false; grid.material.color = new T.Color(C.line); grid.material.needsUpdate = true;
-    matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", recolor);
-    new MutationObserver(recolor).observe(document.documentElement, {attributes:true, attributeFilter:["data-theme"]});
-
     let hlKey = null;
     function highlight(key, focus) {
       hlKey = key;
       all.forEach(m => { const e = m.userData.em; if (e) { m.material.emissive.copy(e.c); m.material.emissiveIntensity = e.i; } });
-      (parts[key] || []).forEach(m => { if (m.material.emissive) { m.material.emissive.set(C.accent); m.material.emissiveIntensity = .55; } });
+      (parts[key] || []).forEach(m => { if (m.material.emissive) { m.material.emissive.copy(cAcc); m.material.emissiveIntensity = .35; } });
       hots.forEach(h => h.el.classList.toggle("on", h.key === key));
       if (focus) Object.assign(goal, focus);
     }
+    theme();
     return {set:p => { st = p; }, highlight};
   }
   return {supported, create};
@@ -1137,7 +1229,7 @@ function dockSVG(withHotspots) {
 }
 
 const PARTS = [
-  {key:"lid", name:"Sliding lid", text:"A sealed, weather-rated roof that opens in seconds and closes over the drone between flights. It never opens in rain or high wind."},
+  {key:"lid", name:"Hinged roof panels", text:"Two sealed roof panels swing up and out on hinged arms, so nothing hangs over the pad and no rails stick out. They close over the drone between flights and stay shut in rain or high wind."},
   {key:"pad", name:"Landing pad and centering bars", text:"After touchdown, two bars slide the drone onto the charging contacts and fix its position. They correct for any landing error left after the final approach."},
   {key:"land", name:"Precision landing", text:"An upward camera on the station tracks the drone and sends it landing targets over MAVLink, so the drone needs no extra sensor. UWB anchors give 10–30 cm positioning near the pad."},
   {key:"charge", name:"Contact charging", text:"A programmable 300–600 W DC charger feeds spring contacts in the pad. Each drone model gets its own charge profile. A swap-ready power bay follows in v1."},
@@ -1254,16 +1346,16 @@ requestAnimationFrame(tick);
 
 /* ---------- Anatomy ---------- */
 const FOCUS = {
-  lid:{az:.2, el:.42, r:11, tx:-1.4, ty:1.7, tz:0},
+  lid:{az:.25, el:.3, r:10.5, tx:-1.2, ty:2.0, tz:0},
   pad:{az:.5, el:.75, r:8, tx:0, ty:1.3, tz:0},
   land:{az:.35, el:.5, r:7.5, tx:-.6, ty:1.6, tz:.4},
   charge:{az:.3, el:.28, r:8, tx:-.2, ty:1.0, tz:.6},
   cams:{az:.9, el:.45, r:8, tx:0, ty:1.5, tz:0},
   compute:{az:.15, el:.22, r:7.5, tx:.4, ty:.9, tz:.6},
-  mast:{az:.75, el:.25, r:10, tx:2.2, ty:3, tz:-1.5},
+  mast:{az:.75, el:.25, r:9.5, tx:2.6, ty:2.9, tz:-1.4},
   power:{az:-.15, el:.22, r:8, tx:-.6, ty:.9, tz:.6}
 };
-const AT = {lid:[-2.78,1.92,0], pad:[-1.55,1.48,-.7], land:[-1.2,1.42,.75], charge:[-.3,.66,1.27], cams:[-1.66,1.62,-1.06], compute:[.55,.66,1.27], mast:[2.6,3.3,-1.85], power:[-1.25,.66,1.27]};
+const AT = {lid:[-2.4,2.3,0], pad:[-1.5,1.62,-.7], land:[-1.25,1.55,.78], charge:[-.18,.74,1.24], cams:[-1.62,1.86,-1.02], compute:[.78,.74,1.24], mast:[3.25,3.3,-1.83], power:[-1.2,.74,1.24]};
 const ana = use3D
   ? BerthDock3D.create($("#anatomyDock"), {aspect:.72, fov:32, view:FOCUS.land, label:"3D model of the Berth station with numbered parts",
       hotspots:PARTS.map(p => ({key:p.key, name:p.name, at:AT[p.key]})), onPick:k => selectPart(k)})
